@@ -359,6 +359,50 @@ box-sizing:border-box;
     gap:10px;
 }
 
+
+/* ===== BOTÃO DE TEMA NO CANTO SUPERIOR DIREITO ===== */
+.cabecalho-pagina{
+    position:relative;
+}
+
+.btn-tema-topo{
+    position:absolute;
+    top:0;
+    right:0;
+}
+
+/* ===== TOTAL DE HORAS (ACIMA DA PLANILHA) ===== */
+.total-horas-topo{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    font-family:Arial,sans-serif;
+    color:#003366;
+    font-weight:bold;
+    font-size:15px;
+}
+
+.total-horas-topo #totalHorasGeral{
+    background:#e8eef5;
+    border:1px solid #003366;
+    border-radius:5px;
+    padding:6px 14px;
+    font-size:15px;
+    color:#003366;
+    min-width:70px;
+    text-align:center;
+}
+
+body.dark-mode .total-horas-topo{
+    color:#7ab3e0;
+}
+
+body.dark-mode .total-horas-topo #totalHorasGeral{
+    background:#1a2a40;
+    border-color:#7ab3e0;
+    color:#7ab3e0;
+}
+
 /* ===== MODO ESCURO ===== */
 body.dark-mode{
     background:#1a1a2e;
@@ -476,6 +520,23 @@ body.dark-mode .total.aviso-duracao{
 <div id="toast-container"></div>
 
 <div class="cabecalho-pagina">
+
+<button class="botao-link btn-tema-topo" id="btnDarkMode" title="Alternar Modo Escuro" aria-label="Alternar modo escuro" onclick="alternarModoEscuro()">
+            <svg id="iconDark" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+            </svg>
+            <svg id="iconLight" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;margin:auto;">
+                <circle cx="12" cy="12" r="5"/>
+                <line x1="12" y1="1" x2="12" y2="3"/>
+                <line x1="12" y1="21" x2="12" y2="23"/>
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+                <line x1="1" y1="12" x2="3" y2="12"/>
+                <line x1="21" y1="12" x2="23" y2="12"/>
+                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+            </svg>
+        </button>
 
 <h1>Planejamento de Estudos</h1>
 
@@ -627,22 +688,10 @@ body.dark-mode .total.aviso-duracao{
 </div>
 
 <div class="botoes-direita">
-<button class="botao-link" id="btnDarkMode" title="Alternar Modo Escuro" aria-label="Alternar modo escuro" onclick="alternarModoEscuro()">
-            <svg id="iconDark" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-            </svg>
-            <svg id="iconLight" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;margin:auto;">
-                <circle cx="12" cy="12" r="5"/>
-                <line x1="12" y1="1" x2="12" y2="3"/>
-                <line x1="12" y1="21" x2="12" y2="23"/>
-                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
-                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
-                <line x1="1" y1="12" x2="3" y2="12"/>
-                <line x1="21" y1="12" x2="23" y2="12"/>
-                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
-                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
-            </svg>
-        </button>
+<div class="total-horas-topo">
+    <span>Total de horas estudadas:</span>
+    <span id="totalHorasGeral">00:00</span>
+</div>
 <button onclick="adicionarLinha()" style="margin-top:0;">
 Adicionar Linha
 </button>
@@ -684,12 +733,6 @@ Salvar
 </div>
 
 
-<div style="display:flex; justify-content:flex-end; align-items:center; margin-top:15px;">
-  <div style="display:flex; align-items:center; gap:10px; font-family:Arial,sans-serif; color:#003366; font-weight:bold; font-size:15px;">
-    <span>Total de horas estudadas:</span>
-    <span id="totalHorasGeral" style="background:#e8eef5; border:1px solid #003366; border-radius:5px; padding:6px 14px; font-size:15px; color:#003366; min-width:70px; text-align:center;">00:00</span>
-  </div>
-</div>
 
 
 
