@@ -583,6 +583,9 @@ body.dark-mode .total.aviso-duracao{
 <button onclick="adicionarLinha()" style="margin-top:0;">
 Adicionar Linha
 </button>
+<button onclick="carregarDaPlanilha(false)" id="btnImportarPlanilha" style="margin-top:0;" title="Busca as mudanças feitas na planilha">
+🔄 Atualizar
+</button>
 <button onclick="salvarNaPlanilha()" id="btnSalvarPlanilha" style="background:#0d7a3f; margin-top:0;">
 Salvar
 </button>
@@ -1895,11 +1898,11 @@ function removerLinha(botao){
   salvarDados();
 
   if(precisaApagarNaPlanilha){
-    enviarExclusoesPendentes().then(ok => {
-      if(ok){
+    enviarExclusoesPendentes().then(r => {
+      if(r.ok){
         mostrarToast("Linha removida do site e da planilha.", "sucesso");
       } else {
-        mostrarToast("Linha removida aqui, mas não foi possível apagá-la da planilha agora. Será tentado de novo no próximo envio.", "erro");
+        mostrarToast("Linha removida aqui, mas não foi apagada na planilha: " + r.motivo + ". Será tentado de novo.", "erro");
       }
     });
   }
@@ -1934,9 +1937,9 @@ function limparDados(){
     });
     atualizarTotalGeral();
     mostrarToast("Dados apagados.", "info");
-    enviarExclusoesPendentes().then(ok => {
-      if(!ok && obterExclusoesPendentes().length > 0){
-        mostrarToast("Não foi possível apagar na planilha agora. Será tentado de novo no próximo envio.", "erro");
+    enviarExclusoesPendentes().then(r => {
+      if(!r.ok){
+        mostrarToast("Não foi possível apagar na planilha: " + r.motivo + ". Será tentado de novo.", "erro");
       }
     });
   }
@@ -1954,6 +1957,14 @@ window.addEventListener("load", function(){
     document.getElementById("iconDark").style.display = "none";
     document.getElementById("iconLight").style.display = "block";
   }
+});
+
+// Ao voltar para esta aba (ex.: depois de mexer na planilha), sincroniza de novo,
+// no máximo uma vez a cada 15 segundos.
+document.addEventListener("visibilitychange", function(){
+  if(document.visibilityState !== "visible") return;
+  if(Date.now() - ultimaSincronizacao < 15000) return;
+  carregarDaPlanilha(true);
 });
 
 // Aviso ao fechar a aba, mas só se houver dado ainda não enviado à planilha
@@ -1976,40 +1987,96 @@ function alternarModoEscuro(){
 const URL_SCRIPT = "https://script.google.com/macros/s/AKfycbwRwX4L65p6jHIgd_3e2BnUmeKvSARD-ED6WwU6k9x1z5J-3mnUl4p-eEm3x-FICsRf/exec";
 
 // Envia um lote de linhas (array de objetos) para a planilha do Google
-// Envia qualquer conteúdo ao Apps Script e confere a resposta ({ok:true}).
-// Sem "no-cors": assim erros do script deixam de passar por sucesso.
-async function enviarParaScript(payload){
+// Endereço do GET com um parâmetro que muda a cada chamada, para o navegador
+// nunca reaproveitar uma resposta antiga da planilha.
+function urlSemCache(){
+  return URL_SCRIPT + (URL_SCRIPT.includes("?") ? "&" : "?") + "_=" + Date.now();
+}
+
+// Lê a planilha inteira. Lança erro se a resposta não for a esperada.
+async function lerPlanilha(){
+  const resposta = await fetch(urlSemCache(), { method: "GET", cache: "no-store" });
+  if(!resposta.ok) throw new Error("HTTP " + resposta.status);
+  const json = JSON.parse(await resposta.text());
+  if(json.erro) throw new Error(json.erro);
+  if(!Array.isArray(json.dados)) throw new Error("resposta sem o campo 'dados'");
+  return json.dados;
+}
+
+// Envia ao Apps Script e só devolve {ok:true} quando há confirmação real.
+//  - Se a resposta do POST puder ser lida e disser ok:true, vale (a não ser que
+//    "sempreConferir" peça para checar na planilha de qualquer jeito).
+//  - Se a resposta NÃO puder ser lida (bloqueio de CORS do navegador), reenvia
+//    sem ler a resposta (é seguro: gravar e excluir por id são idempotentes) e
+//    confere lendo a planilha com o GET, que já funciona.
+//  "conferir(dadosDaPlanilha)" devolve null se está tudo certo, ou um texto com o problema.
+async function enviarParaScript(payload, conferir, sempreConferir){
+  const opcoes = {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" }, // requisição "simples": sem preflight
+    body: JSON.stringify(payload)
+  };
+  let json = null;
+
   try{
-    const resposta = await fetch(URL_SCRIPT, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" }, // requisição "simples": sem preflight
-      body: JSON.stringify(payload)
-    });
-    if(!resposta.ok) return false;
-    const json = await resposta.json();
-    return !!(json && json.ok === true);
+    const resposta = await fetch(URL_SCRIPT, opcoes);
+    if(!resposta.ok) return { ok:false, motivo:"o Apps Script respondeu HTTP " + resposta.status };
+    try{ json = JSON.parse(await resposta.text()); } catch(erroLeitura){ json = null; }
   } catch(erro){
-    console.error("Erro ao falar com a planilha:", erro);
-    return false;
+    console.warn("Resposta do POST ilegível; reenviando sem ler e conferindo na planilha:", erro);
+    try{
+      await fetch(URL_SCRIPT, Object.assign({}, opcoes, { mode: "no-cors" }));
+    } catch(erro2){
+      return { ok:false, motivo:"sem conexão com o Apps Script" };
+    }
+  }
+
+  if(json && json.ok === false){
+    return { ok:false, motivo:"o Apps Script informou erro: " + (json.erro || "sem detalhes") };
+  }
+  if(json && json.ok === true && !sempreConferir){
+    return { ok:true };
+  }
+
+  try{
+    const problema = conferir ? conferir(await lerPlanilha()) : null;
+    return problema ? { ok:false, motivo:problema } : { ok:true };
+  } catch(erro){
+    return { ok:false, motivo:"não foi possível confirmar na planilha (" + erro.message + ")" };
   }
 }
 
 async function salvarGoogle(dados){
-  if(!dados || dados.length === 0) return true;
-  return enviarParaScript(dados);
+  if(!dados || dados.length === 0) return { ok:true };
+  return enviarParaScript(dados, planilha => {
+    const porId = new Map(planilha.map(d => [d.id, d]));
+    const campos = ["data", "materia", "conteudo", "inicio", "termino"];
+    const faltam = dados.filter(e => {
+      const d = porId.get(e.id);
+      return !d || campos.some(c => String(d[c] || "").trim() !== String(e[c] || "").trim());
+    });
+    return faltam.length ? faltam.length + " linha(s) não chegaram à planilha" : null;
+  });
 }
 
-// Apaga na planilha as linhas removidas aqui. Só tira da fila o que foi confirmado.
+// Apaga na planilha as linhas removidas aqui. Sempre confere na planilha e só
+// tira da fila o que realmente sumiu de lá.
 async function enviarExclusoesPendentes(){
   const pendentes = obterExclusoesPendentes();
-  if(pendentes.length === 0) return true;
+  if(pendentes.length === 0) return { ok:true };
 
-  const ok = await enviarParaScript({ acao: "excluir", ids: pendentes });
-  if(ok){
+  const resultado = await enviarParaScript({ acao: "excluir", ids: pendentes }, planilha => {
+    const ainda = pendentes.filter(id => planilha.some(d => d.id === id));
+    return ainda.length
+      ? "a planilha ainda tem " + ainda.length + " linha(s) que deveriam ter sido apagadas. Confirme que o código do Apps Script foi atualizado e publicado em uma Nova versão"
+      : null;
+  }, true);
+
+  if(resultado.ok){
     const restantes = obterExclusoesPendentes().filter(id => !pendentes.includes(id));
     salvarExclusoesPendentes(restantes);
   }
-  return ok;
+  return resultado;
 }
 
 // Chamado pelo botão "Salvar na Planilha".
@@ -2022,7 +2089,7 @@ async function salvarNaPlanilha(){
 
   // 1) exclusões que ficaram pendentes (ex.: remoção feita sem internet)
   const havia = obterExclusoesPendentes().length > 0;
-  const exclusoesOk = await enviarExclusoesPendentes();
+  const exclusoes = await enviarExclusoesPendentes();
 
   // 2) linhas novas ou alteradas
   const assinaturas = obterAssinaturasEnviadas();
@@ -2044,10 +2111,10 @@ async function salvarNaPlanilha(){
   });
 
   if(novos.length === 0){
-    if(havia && exclusoesOk){
+    if(havia && exclusoes.ok){
       mostrarToast("Exclusões enviadas para a planilha.", "sucesso");
-    } else if(havia && !exclusoesOk){
-      mostrarToast("Não foi possível apagar na planilha. Verifique sua conexão e tente novamente.", "erro");
+    } else if(havia && !exclusoes.ok){
+      mostrarToast("Não foi possível apagar na planilha: " + exclusoes.motivo + ".", "erro");
     } else {
       mostrarToast("Não há dados novos ou alterados para salvar.", "info");
     }
@@ -2055,16 +2122,19 @@ async function salvarNaPlanilha(){
     return;
   }
 
-  const ok = await salvarGoogle(novos);
+  const resultado = await salvarGoogle(novos);
 
-  if(ok){
+  if(resultado.ok){
     // relê: a tabela pode ter mudado enquanto o envio estava em andamento
     const atuais = obterAssinaturasEnviadas();
     Object.assign(atuais, novasAssinaturas);
     salvarAssinaturasEnviadas(atuais);
     mostrarToast(novos.length + " linha(s) salva(s) na planilha com sucesso!", "sucesso");
+    if(havia && !exclusoes.ok){
+      mostrarToast("Mas não foi possível apagar na planilha: " + exclusoes.motivo + ".", "erro");
+    }
   } else {
-    mostrarToast("Houve um erro ao salvar na planilha. Verifique sua conexão e tente novamente.", "erro");
+    mostrarToast("Erro ao salvar na planilha: " + resultado.motivo + ".", "erro");
   }
 
   if(btn){ btn.disabled = false; btn.textContent = "Salvar"; }
@@ -2078,15 +2148,25 @@ async function salvarNaPlanilha(){
 // preenche a tabela com as linhas que ainda não existem neste navegador.
 // Não sobrescreve linhas que já existem localmente (mesmo id), para não
 // apagar edições feitas neste navegador que ainda não foram enviadas.
+let sincronizando = false;
+let ultimaSincronizacao = 0;
+
 async function carregarDaPlanilha(silencioso){
+  if(sincronizando) return;
+  sincronizando = true;
+  ultimaSincronizacao = Date.now();
+
   const btn = document.getElementById("btnImportarPlanilha");
-  if(btn){ btn.disabled = true; btn.textContent = "Importando..."; }
+  if(btn){ btn.disabled = true; btn.textContent = "Atualizando..."; }
 
   try{
     // antes de ler, apaga na planilha o que foi removido aqui e ainda estava pendente
-    await enviarExclusoesPendentes();
+    const exclusoes = await enviarExclusoesPendentes();
+    if(!exclusoes.ok){
+      mostrarToast("Exclusão pendente não enviada: " + exclusoes.motivo + ".", "erro");
+    }
 
-    const resposta = await fetch(URL_SCRIPT, { method: "GET" });
+    const resposta = await fetch(urlSemCache(), { method: "GET", cache: "no-store" });
 
     if(!resposta.ok){
       throw new Error("Resposta HTTP " + resposta.status + " — verifique se o Apps Script foi reimplantado (Nova versão) com o doGet.");
@@ -2219,11 +2299,11 @@ async function carregarDaPlanilha(silencioso){
     }
   } catch(erro){
     console.error("Erro ao carregar dados da planilha:", erro);
-    if(!silencioso){
-      mostrarToast("Erro ao importar: " + erro.message, "erro");
-    }
+    // mostra o erro mesmo no carregamento automático: sincronização que falha em silêncio engana
+    mostrarToast("Erro ao sincronizar com a planilha: " + erro.message, "erro");
   } finally {
-    if(btn){ btn.disabled = false; btn.textContent = "📥 Importar da Planilha"; }
+    sincronizando = false;
+    if(btn){ btn.disabled = false; btn.textContent = "🔄 Atualizar"; }
   }
 }
 
