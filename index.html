@@ -697,10 +697,46 @@ function salvarAssinaturasEnviadas(assinaturas){
   localStorage.setItem("planilha_assinaturas", JSON.stringify(assinaturas));
 }
 
+// Ids de linhas que o usuário removeu aqui mas que ainda não foram apagadas
+// da planilha (ex.: sem internet na hora). São reenviados no próximo envio.
+const CHAVE_EXCLUSOES = "planilha_exclusoes";
+
+function obterExclusoesPendentes(){
+  try{
+    const lista = JSON.parse(localStorage.getItem(CHAVE_EXCLUSOES) || "[]");
+    return Array.isArray(lista) ? lista : [];
+  } catch(erro){
+    return [];
+  }
+}
+
+function salvarExclusoesPendentes(lista){
+  localStorage.setItem(CHAVE_EXCLUSOES, JSON.stringify(lista));
+}
+
+// Registra que uma linha foi removida. Só entra na fila se ela já tinha sido
+// enviada à planilha antes (linha nunca enviada não existe lá, nada a apagar).
+// Devolve true se algo foi colocado na fila.
+function registrarExclusao(id){
+  if(!id) return false;
+  const assinaturas = obterAssinaturasEnviadas();
+  if(!(id in assinaturas)) return false;
+
+  delete assinaturas[id];
+  salvarAssinaturasEnviadas(assinaturas);
+
+  const pendentes = obterExclusoesPendentes();
+  if(!pendentes.includes(id)){
+    pendentes.push(id);
+    salvarExclusoesPendentes(pendentes);
+  }
+  return true;
+}
+
 // Verifica se existe alguma linha com dado novo/alterado ainda não enviado
 function existePendenciaDeSincronizacao(){
   const assinaturas = obterAssinaturasEnviadas();
-  let pendente = false;
+  let pendente = obterExclusoesPendentes().length > 0;
   tabela.querySelectorAll("tr").forEach(linha => {
     const registro = coletarDadosLinha(linha);
     if(linhaVazia(registro)) return;
@@ -1848,19 +1884,32 @@ function removerLinha(botao){
 
   const registro = coletarDadosLinha(linha);
 
-  if(!linhaVazia(registro) && !confirm("Remover esta linha?\nOs dados já enviados para a planilha não serão apagados de lá.")){
+  if(!linhaVazia(registro) && !confirm("Remover esta linha?\nSe ela já foi salva, também será apagada da planilha.")){
     return;
   }
+
+  const precisaApagarNaPlanilha = registrarExclusao(registro.id);
 
   linha.remove();
   atualizarTotalGeral();
   salvarDados();
+
+  if(precisaApagarNaPlanilha){
+    enviarExclusoesPendentes().then(ok => {
+      if(ok){
+        mostrarToast("Linha removida do site e da planilha.", "sucesso");
+      } else {
+        mostrarToast("Linha removida aqui, mas não foi possível apagá-la da planilha agora. Será tentado de novo no próximo envio.", "erro");
+      }
+    });
+  }
 }
 
 function limparDados(){
-  if(confirm("Tem certeza que deseja apagar todos os dados?\nEssa ação não pode ser desfeita.")){
+  if(confirm("Tem certeza que deseja apagar todos os dados?\nIsso também apaga da planilha o que já foi salvo. Essa ação não pode ser desfeita.")){
+    // enfileira a exclusão, na planilha, de tudo que já tinha sido enviado
+    tabela.querySelectorAll("tr").forEach(linha => registrarExclusao(linha.dataset.id));
     localStorage.removeItem("planejamento_estudos");
-    localStorage.removeItem("planilha_assinaturas");
     // limpa todos os campos visualmente
     tabela.querySelectorAll("tr").forEach(linha => {
       let inputData = linha.querySelector("input[type='date']");
@@ -1885,6 +1934,11 @@ function limparDados(){
     });
     atualizarTotalGeral();
     mostrarToast("Dados apagados.", "info");
+    enviarExclusoesPendentes().then(ok => {
+      if(!ok && obterExclusoesPendentes().length > 0){
+        mostrarToast("Não foi possível apagar na planilha agora. Será tentado de novo no próximo envio.", "erro");
+      }
+    });
   }
 }
 
@@ -1922,20 +1976,40 @@ function alternarModoEscuro(){
 const URL_SCRIPT = "https://script.google.com/macros/s/AKfycbwRwX4L65p6jHIgd_3e2BnUmeKvSARD-ED6WwU6k9x1z5J-3mnUl4p-eEm3x-FICsRf/exec";
 
 // Envia um lote de linhas (array de objetos) para a planilha do Google
-async function salvarGoogle(dados){
-  if(!dados || dados.length === 0) return true;
+// Envia qualquer conteúdo ao Apps Script e confere a resposta ({ok:true}).
+// Sem "no-cors": assim erros do script deixam de passar por sucesso.
+async function enviarParaScript(payload){
   try{
-    await fetch(URL_SCRIPT, {
+    const resposta = await fetch(URL_SCRIPT, {
       method: "POST",
-      mode: "no-cors", // evita bloqueio de CORS; não permite ler a resposta, mas o envio funciona
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify(dados)
+      headers: { "Content-Type": "text/plain;charset=utf-8" }, // requisição "simples": sem preflight
+      body: JSON.stringify(payload)
     });
-    return true;
+    if(!resposta.ok) return false;
+    const json = await resposta.json();
+    return !!(json && json.ok === true);
   } catch(erro){
-    console.error("Erro ao salvar na planilha:", erro);
+    console.error("Erro ao falar com a planilha:", erro);
     return false;
   }
+}
+
+async function salvarGoogle(dados){
+  if(!dados || dados.length === 0) return true;
+  return enviarParaScript(dados);
+}
+
+// Apaga na planilha as linhas removidas aqui. Só tira da fila o que foi confirmado.
+async function enviarExclusoesPendentes(){
+  const pendentes = obterExclusoesPendentes();
+  if(pendentes.length === 0) return true;
+
+  const ok = await enviarParaScript({ acao: "excluir", ids: pendentes });
+  if(ok){
+    const restantes = obterExclusoesPendentes().filter(id => !pendentes.includes(id));
+    salvarExclusoesPendentes(restantes);
+  }
+  return ok;
 }
 
 // Chamado pelo botão "Salvar na Planilha".
@@ -1944,12 +2018,18 @@ async function salvarGoogle(dados){
 // duplicidade quanto o problema de uma correção não chegar até a planilha.
 async function salvarNaPlanilha(){
   const btn = document.getElementById("btnSalvarPlanilha");
-  const linhas = tabela.querySelectorAll("tr");
+  if(btn){ btn.disabled = true; btn.textContent = "Salvando..."; }
+
+  // 1) exclusões que ficaram pendentes (ex.: remoção feita sem internet)
+  const havia = obterExclusoesPendentes().length > 0;
+  const exclusoesOk = await enviarExclusoesPendentes();
+
+  // 2) linhas novas ou alteradas
   const assinaturas = obterAssinaturasEnviadas();
   const novos = [];
   const novasAssinaturas = {};
 
-  linhas.forEach(linha => {
+  tabela.querySelectorAll("tr").forEach(linha => {
     const registro = coletarDadosLinha(linha);
 
     // ignora linhas totalmente vazias
@@ -1964,17 +2044,24 @@ async function salvarNaPlanilha(){
   });
 
   if(novos.length === 0){
-    mostrarToast("Não há dados novos ou alterados para salvar.", "info");
+    if(havia && exclusoesOk){
+      mostrarToast("Exclusões enviadas para a planilha.", "sucesso");
+    } else if(havia && !exclusoesOk){
+      mostrarToast("Não foi possível apagar na planilha. Verifique sua conexão e tente novamente.", "erro");
+    } else {
+      mostrarToast("Não há dados novos ou alterados para salvar.", "info");
+    }
+    if(btn){ btn.disabled = false; btn.textContent = "Salvar"; }
     return;
   }
-
-  if(btn){ btn.disabled = true; btn.textContent = "Salvando..."; }
 
   const ok = await salvarGoogle(novos);
 
   if(ok){
-    Object.assign(assinaturas, novasAssinaturas);
-    salvarAssinaturasEnviadas(assinaturas);
+    // relê: a tabela pode ter mudado enquanto o envio estava em andamento
+    const atuais = obterAssinaturasEnviadas();
+    Object.assign(atuais, novasAssinaturas);
+    salvarAssinaturasEnviadas(atuais);
     mostrarToast(novos.length + " linha(s) salva(s) na planilha com sucesso!", "sucesso");
   } else {
     mostrarToast("Houve um erro ao salvar na planilha. Verifique sua conexão e tente novamente.", "erro");
@@ -1996,6 +2083,9 @@ async function carregarDaPlanilha(silencioso){
   if(btn){ btn.disabled = true; btn.textContent = "Importando..."; }
 
   try{
+    // antes de ler, apaga na planilha o que foi removido aqui e ainda estava pendente
+    await enviarExclusoesPendentes();
+
     const resposta = await fetch(URL_SCRIPT, { method: "GET" });
 
     if(!resposta.ok){
@@ -2010,17 +2100,40 @@ async function carregarDaPlanilha(silencioso){
       throw new Error("A resposta não é um JSON válido. Provavelmente o Apps Script ainda não tem o doGet implantado (ou a implantação não foi atualizada).");
     }
 
+    // o doGet devolve {dados:[], erro:"..."} quando falha: não pode ser confundido
+    // com "planilha vazia", senão apagaríamos linhas locais por engano
+    if(json && json.erro){
+      throw new Error("O Apps Script respondeu com erro: " + json.erro);
+    }
+
     if(!json || !Array.isArray(json.dados)){
       throw new Error("A resposta do Apps Script não trouxe o campo 'dados'. Confira se o código do doGet foi colado corretamente.");
     }
 
-    if(json.dados.length === 0){
-      if(!silencioso) mostrarToast("A planilha ainda não tem nenhum dado salvo.", "info");
-      if(btn){ btn.disabled = false; btn.textContent = "📥 Importar da Planilha"; }
-      return;
+    const assinaturas = obterAssinaturasEnviadas();
+    const idsPlanilha = new Set(json.dados.map(d => d.id));
+    const exclusoesPendentes = new Set(obterExclusoesPendentes());
+
+    // Linhas que já tinham sido enviadas (têm assinatura) mas não existem mais
+    // na planilha foram excluídas em outro lugar: remove também aqui.
+    // Se a linha tiver edição local ainda não enviada, ela é mantida (fica ⏳).
+    let removidas = 0;
+    Array.from(tabela.querySelectorAll("tr")).forEach(linha => {
+      const id = linha.dataset.id;
+      if(!id || idsPlanilha.has(id) || !(id in assinaturas)) return;
+
+      const igualAoEnviado = assinaturas[id] === calcularAssinatura(coletarDadosLinha(linha));
+      delete assinaturas[id];
+      if(igualAoEnviado){
+        linha.remove();
+        removidas++;
+      }
+    });
+
+    if(tabela.querySelectorAll("tr").length === 0){
+      adicionarLinha();
     }
 
-    const assinaturas = obterAssinaturasEnviadas();
     const idsLocais = new Set();
     tabela.querySelectorAll("tr").forEach(linha => {
       if(linha.dataset.id) idsLocais.add(linha.dataset.id);
@@ -2030,6 +2143,7 @@ async function carregarDaPlanilha(silencioso){
 
     json.dados.forEach(item => {
       if(!item.id || idsLocais.has(item.id)) return; // já existe localmente, não mexe
+      if(exclusoesPendentes.has(item.id)) return;    // removida aqui, ainda não apagada na planilha
 
       // reaproveita a primeira linha em branco; só cria uma nova se não houver
       // nenhuma. Assim as linhas com dados ficam sempre antes das vazias.
@@ -2094,8 +2208,14 @@ async function carregarDaPlanilha(silencioso){
 
     if(importadas > 0){
       mostrarToast(importadas + " linha(s) importada(s) da planilha!", "sucesso");
-    } else if(!silencioso){
-      mostrarToast("Nenhum dado novo encontrado na planilha (tudo já estava aqui).", "info");
+    }
+    if(removidas > 0){
+      mostrarToast(removidas + " linha(s) removida(s) por terem sido excluídas da planilha.", "info");
+    }
+    if(importadas === 0 && removidas === 0 && !silencioso){
+      mostrarToast(json.dados.length === 0
+        ? "A planilha ainda não tem nenhum dado salvo."
+        : "Nenhum dado novo encontrado na planilha (tudo já estava aqui).", "info");
     }
   } catch(erro){
     console.error("Erro ao carregar dados da planilha:", erro);
